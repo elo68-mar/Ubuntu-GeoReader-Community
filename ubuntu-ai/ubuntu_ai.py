@@ -5,8 +5,9 @@ import json
 import os
 import re
 import sys
+from urllib.error import HTTPError
 from urllib.parse import quote, urlsplit
-from urllib.request import Request, urlopen
+from urllib.request import HTTPRedirectHandler, Request, build_opener
 
 API = "https://api.anthropic.com/v1/messages"
 GITHUB = "https://api.github.com/search/repositories"
@@ -22,13 +23,29 @@ class ResearchError(Exception):
     pass
 
 
+class NoRedirectHandler(HTTPRedirectHandler):
+    """Never follow redirects, even on same-origin or unauthenticated requests."""
+
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        return None
+
+
 def http_json(url, payload=None, headers=None):
     data = json.dumps(payload).encode() if payload is not None else None
     request = Request(url, data=data, headers=headers or {})
     try:
-        with urlopen(request, timeout=30) as response:
+        # A private opener avoids ambient/global redirect handlers. Block all
+        # redirects, including POST rewrites, cross-port and HTTPS downgrades.
+        opener = build_opener(NoRedirectHandler())
+        with opener.open(request, timeout=30) as response:
             return json.load(response)
     except Exception as exc:
+        # HTTPError owns a response stream, including on rejected redirects.
+        if isinstance(exc, HTTPError):
+            try:
+                exc.close()
+            except Exception:
+                pass
         # Never print provider exception bodies, query strings, or credentials.
         raise ResearchError("External service failed or returned invalid JSON (%s)." % type(exc).__name__) from None
 
